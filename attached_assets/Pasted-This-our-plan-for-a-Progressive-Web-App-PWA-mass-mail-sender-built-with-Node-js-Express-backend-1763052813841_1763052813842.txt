@@ -1,0 +1,921 @@
+This our plan for a Progressive Web App (PWA) mass-mail sender built with Node.js + Express (backend) and React (frontend). It includes:
+	•	Desktop / Mobile preview modes (resolution emulator)
+	•	From Name, Subject, Content (plain / HTML) with live preview and a Preview Live HTML button
+	•	Variable tag replacement: {Email}, {Domain}, {Name} parsed from recipient list (email and inferred name/domain)
+	•	SMTP profile management, rotation during sending and SMTP test before adding
+	•	Upload recipients via .txt (one per line) or paste, or type one-per-line
+	•	Send queue with configurable delay (seconds), pause/resume, total sent / failed counters
+	•	Pretty server-side colored logs (chalk) and sending logs in UI
+	•	Colorized CLI prints that mimic Colorama-style (but using chalk in Node)
+	•	PWA manifest + service worker registration
+	•	Fully documented run & build steps, design rationale, and developer notes
+
+⚠️ Legal & safety: Use only for legitimate, opt-in mailings. Do not use to bypass spam protections. Respect CAN-SPAM / GDPR and SMTP provider limits.
+
+⸻
+
+Quick project structure (complete)
+
+pwa-mailer/
+├─ backend/
+│  ├─ package.json
+│  ├─ server.js
+│  ├─ smtpStore.json
+│  ├─ uploads/          # multer temp files
+│  └─ .env.example
+├─ frontend/
+│  ├─ package.json
+│  ├─ public/
+│  │  ├─ index.html
+│  │  └─ manifest.json
+│  ├─ src/
+│  │  ├─ index.jsx
+│  │  ├─ App.jsx
+│  │  ├─ serviceWorkerRegistration.js
+│  │  └─ components/
+│  │     ├─ EditorPanel.jsx
+│  │     ├─ PreviewPanel.jsx
+│  │     ├─ SMTPManager.jsx
+│  │     ├─ RecipientUploader.jsx
+│  │     ├─ SendControls.jsx
+│  │     └─ LogPanel.jsx
+└─ README.md
+
+
+⸻
+
+Backend (Node + Express + Nodemailer)
+
+backend/package.json
+
+{
+  "name": "pwa-mailer-backend",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "multer": "^1.4.5",
+    "nodemailer": "^6.9.4",
+    "body-parser": "^1.20.2",
+    "chalk": "^5.3.0",
+    "cors": "^2.8.5",
+    "uuid": "^9.0.0",
+    "fs-extra": "^11.1.1",
+    "dotenv": "^16.0.3"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.22"
+  }
+}
+
+backend/.env.example
+
+PORT=4000
+ADMIN_EMAIL=admin@example.com
+LOG_LEVEL=info
+
+backend/smtpStore.json (start empty)
+
+{ "profiles": [] }
+
+backend/server.js (complete — paste into backend/server.js)
+
+require('dotenv').config();
+const express = require('express');
+const bodyParser = require('body-parser');
+const multer = require('multer');
+const fs = require('fs-extra');
+const path = require('path');
+const nodemailer = require('nodemailer');
+const chalk = require('chalk');
+const { v4: uuidv4 } = require('uuid');
+const cors = require('cors');
+
+const app = express();
+const PORT = process.env.PORT || 4000;
+app.use(bodyParser.json({ limit: '10mb' }));
+app.use(bodyParser.urlencoded({ extended: true }));
+app.use(cors());
+
+const UPLOAD_DIR = path.join(__dirname, 'uploads');
+fs.ensureDirSync(UPLOAD_DIR);
+const upload = multer({ dest: UPLOAD_DIR });
+
+const SMTP_STORE = path.join(__dirname, 'smtpStore.json');
+if (!fs.existsSync(SMTP_STORE)) fs.writeJSONSync(SMTP_STORE, { profiles: [] }, { spaces: 2 });
+
+const loadProfiles = () => fs.readJSONSync(SMTP_STORE).profiles;
+const saveProfiles = (p) => fs.writeJSONSync(SMTP_STORE, { profiles: p }, { spaces: 2 });
+
+// Logging helpers (colorama-like)
+const log = {
+  info: (...args) => console.log(chalk.blue('[INFO]'), ...args),
+  success: (...args) => console.log(chalk.green('[OK]'), ...args),
+  warn: (...args) => console.log(chalk.yellow('[WARN]'), ...args),
+  error: (...args) => console.log(chalk.red('[ERR]'), ...args)
+};
+
+// ========== SMTP management endpoints ==========
+app.get('/api/smtp/list', (req, res) => res.json({ profiles: loadProfiles() }));
+
+app.post('/api/smtp/add', (req, res) => {
+  const { host, port, secure, user, pass, name } = req.body;
+  if (!host || !user || !pass) return res.status(400).json({ error: 'host, user, pass required' });
+  const profiles = loadProfiles();
+  const created = { id: uuidv4(), host, port: Number(port) || 587, secure: !!secure, user, pass, name: name || user, maxMessagesPerConn: 100 };
+  profiles.push(created);
+  saveProfiles(profiles);
+  log.success('Added SMTP profile', created.host, created.user);
+  res.json({ ok: true, profile: created });
+});
+
+app.post('/api/smtp/test', async (req, res) => {
+  const { host, port, secure, user, pass } = req.body;
+  if (!host || !user || !pass) return res.status(400).json({ error: 'missing fields' });
+  try {
+    const transporter = nodemailer.createTransport({
+      host, port: Number(port) || 587, secure: !!secure,
+      auth: { user, pass },
+      tls: { rejectUnauthorized: false }
+    });
+    await transporter.verify();
+    log.success('SMTP test success', host, user);
+    res.json({ ok: true });
+  } catch (err) {
+    log.error('SMTP test failed', err.message);
+    res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
+// recipients upload (TXT) or paste handled on client — but server can accept file upload
+app.post('/api/recipients/upload', upload.single('file'), async (req, res) => {
+  try {
+    const file = req.file;
+    const content = await fs.readFile(file.path, 'utf8');
+    const addrs = content.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    await fs.remove(file.path);
+    res.json({ ok: true, recipients: addrs });
+  } catch (err) {
+    log.error('Upload failed', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Utility: parse recipient email to variables
+function parseRecipientVars(email) {
+  const parts = email.split('@');
+  const local = parts[0] || '';
+  const domain = parts[1] || '';
+  // Try to guess name from local part (john.smith -> John Smith)
+  let name = local.replace(/[._\d-]+/g, ' ').trim();
+  name = name.split(/\s+/).map(s => s.charAt(0).toUpperCase() + s.slice(1)).join(' ').trim();
+  return { Email: email, Domain: domain, Name: name || '' };
+}
+
+// Create transporter from a profile
+function makeTransport(profile) {
+  return nodemailer.createTransport({
+    host: profile.host,
+    port: profile.port,
+    secure: profile.secure,
+    auth: { user: profile.user, pass: profile.pass },
+    pool: true,
+    maxMessages: profile.maxMessagesPerConn || 100,
+    tls: { rejectUnauthorized: false }
+  });
+}
+
+// In-memory job queue manager. Simple, works for moderate lists.
+// job = { id, sender: {fromName, fromEmail, subject, content, isHtml}, recipients[], options: {delaySeconds, rotateSMTP}, stats, paused }
+const jobs = new Map();
+
+app.post('/api/send', async (req, res) => {
+  try {
+    const { fromName, fromEmail, subject, content, isHtml, recipients, options } = req.body;
+    if (!recipients || !Array.isArray(recipients) || recipients.length === 0) {
+      return res.status(400).json({ error: 'recipients required' });
+    }
+    const jobId = uuidv4();
+    const job = {
+      id: jobId,
+      sender: { fromName, fromEmail, subject, content, isHtml: !!isHtml },
+      recipients,
+      options: Object.assign({ delaySeconds: 2, rotateSMTP: true }, options || {}),
+      stats: { total: recipients.length, sent: 0, failed: 0, currentIndex: 0 },
+      paused: false,
+      logs: []
+    };
+    jobs.set(jobId, job);
+    // start job async
+    startJob(jobId).catch(err => log.error('Job error', err));
+    res.json({ ok: true, jobId });
+  } catch (err) {
+    log.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Pause/resume endpoints
+app.post('/api/job/:id/pause', (req, res) => {
+  const job = jobs.get(req.params.id);
+  if (!job) return res.status(404).json({ error: 'job not found' });
+  job.paused = true;
+  res.json({ ok: true });
+});
+app.post('/api/job/:id/resume', (req, res) => {
+  const job = jobs.get(req.params.id);
+  if (!job) return res.status(404).json({ error: 'job not found' });
+  job.paused = false;
+  // resume worker
+  startJob(req.params.id).catch(err => log.error('Resume error', err));
+  res.json({ ok: true });
+});
+
+// fetch job status
+app.get('/api/job/:id', (req, res) => {
+  const job = jobs.get(req.params.id);
+  if (!job) return res.status(404).json({ error: 'not found' });
+  res.json({ job: sanitizeJob(job) });
+});
+
+function sanitizeJob(job) {
+  return {
+    id: job.id,
+    stats: job.stats,
+    paused: job.paused,
+    options: job.options,
+    logs: job.logs.slice(-200)
+  };
+}
+
+// ========== core sending worker ==========
+let transporterCache = {}; // profileId -> transporter
+
+async function startJob(jobId) {
+  const job = jobs.get(jobId);
+  if (!job) return;
+  // Build SMTP poolers list if rotation enabled
+  const profiles = loadProfiles();
+  if (!profiles || profiles.length === 0) {
+    job.logs.push({ t: Date.now(), level: 'error', msg: 'No SMTP profiles. Add one before sending.' });
+    log.error('No SMTP profiles configured.');
+    return;
+  }
+
+  // convert recipients to array if string
+  while (job.stats.currentIndex < job.recipients.length) {
+    if (job.paused) {
+      log.warn('Job paused at index', job.stats.currentIndex);
+      break;
+    }
+    const recipient = job.recipients[job.stats.currentIndex];
+    const vars = parseRecipientVars(recipient);
+    // Replace tags in subject and content
+    const subject = applyVars(job.sender.subject, vars);
+    const body = applyVars(job.sender.content, vars);
+
+    // choose profile (round-robin)
+    const idx = job.stats.currentIndex % profiles.length;
+    const profile = profiles[idx];
+    if (!transporterCache[profile.id]) {
+      transporterCache[profile.id] = makeTransport(profile);
+    }
+    const transporter = transporterCache[profile.id];
+
+    const mailOptions = {
+      from: `${job.sender.fromName} <${job.sender.fromEmail}>`,
+      to: recipient,
+      subject,
+      [job.sender.isHtml ? 'html' : 'text']: body
+    };
+
+    try {
+      log.info(`Sending to ${recipient} via ${profile.host} (${profile.user})`);
+      job.logs.push({ t: Date.now(), level: 'info', msg: `Sending to ${recipient} via ${profile.host}` });
+      const info = await transporter.sendMail(mailOptions);
+      job.stats.sent += 1;
+      job.logs.push({ t: Date.now(), level: 'success', msg: `Sent ${recipient} (id:${info.messageId || 'n/a'})` });
+      log.success(`Sent ${recipient} (job ${job.id})`);
+    } catch (err) {
+      job.stats.failed += 1;
+      job.logs.push({ t: Date.now(), level: 'error', msg: `Failed ${recipient}: ${err.message}` });
+      log.error(`Failed ${recipient}`, err.message);
+    }
+
+    job.stats.currentIndex += 1;
+
+    // small delay between sends
+    const delayMs = Math.max(0, (job.options.delaySeconds || 2) * 1000);
+    await new Promise(r => setTimeout(r, delayMs));
+  }
+
+  // job done?
+  if (job.stats.currentIndex >= job.recipients.length) {
+    job.logs.push({ t: Date.now(), level: 'info', msg: `Job complete. sent=${job.stats.sent} failed=${job.stats.failed}` });
+    log.info('Job complete', job.id, job.stats);
+    // Optionally close transporters
+    Object.values(transporterCache).forEach(t => {
+      try { t.close && t.close(); } catch(e){}
+    });
+    transporterCache = {};
+  }
+}
+
+function applyVars(template, vars){
+  if (!template) return '';
+  return template.replace(/\{(Email|Domain|Name)\}/g, (_, key) => vars[key] || '');
+}
+
+// static serve frontend if built (optional)
+const buildPath = path.join(__dirname, '..', 'frontend', 'build');
+if (fs.existsSync(buildPath)) {
+  app.use(express.static(buildPath));
+  app.get('*', (req, res) => res.sendFile(path.join(buildPath, 'index.html')));
+}
+
+app.listen(PORT, () => log.success(`Backend listening on ${PORT}`));
+
+Notes about backend:
+	•	The backend keeps jobs in memory — good for demo or single-host. For production use, persist jobs and statistics (Redis / DB), and manage workers.
+	•	SMTP rotation uses simple round-robin: recipientIndex % smtpProfiles.length. You can change to more advanced rotation (failover, daily quotas).
+	•	Tag replacement supports {Email}, {Domain}, {Name}. You can extend by adding custom parsing logic (CSV with columns).
+	•	transporter.verify() is used for testing SMTP; sendMail() is pooled transport for efficiency.
+
+⸻
+
+Frontend (React PWA)
+
+The frontend is a React SPA (use Vite or Create React App — we’ll show with Vite style). It includes a responsive attractive UI, an emulator for Desktop/Mobile preview, and all controls.
+
+frontend/package.json
+
+{
+  "name": "pwa-mailer-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "axios": "^1.4.0"
+  },
+  "devDependencies": {
+    "vite": "^5.0.0",
+    "@vitejs/plugin-react": "^3.1.0"
+  }
+}
+
+frontend/public/manifest.json (basic PWA manifest)
+
+{
+  "name": "PWA Mailer",
+  "short_name": "Mailer",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#0b5cff",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
+
+frontend/public/index.html
+
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>PWA Mailer</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/index.jsx"></script>
+  </body>
+</html>
+
+frontend/src/index.jsx
+
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import App from './App';
+import './styles.css';
+import * as serviceWorkerRegistration from './serviceWorkerRegistration';
+
+createRoot(document.getElementById('root')).render(<App />);
+
+// register service worker for PWA offline caching
+serviceWorkerRegistration.register();
+
+frontend/src/App.jsx — main app (contains layout, state, and glue)
+
+import React, { useState, useEffect, useRef } from 'react';
+import axios from 'axios';
+import EditorPanel from './components/EditorPanel';
+import PreviewPanel from './components/PreviewPanel';
+import SMTPManager from './components/SMTPManager';
+import RecipientUploader from './components/RecipientUploader';
+import SendControls from './components/SendControls';
+import LogPanel from './components/LogPanel';
+
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:4000/api';
+
+export default function App(){
+  const [fromName, setFromName] = useState('Sender Name');
+  const [fromEmail, setFromEmail] = useState('sender@example.com');
+  const [subject, setSubject] = useState('Hello {Name} — special offer');
+  const [content, setContent] = useState('<h1>Hi {Name}</h1><p>Visit {Domain}</p>');
+  const [isHtml, setIsHtml] = useState(true);
+  const [recipients, setRecipients] = useState([]);
+  const [jobId, setJobId] = useState(null);
+  const [jobStatus, setJobStatus] = useState(null);
+  const [options, setOptions] = useState({ delaySeconds: 2, rotateSMTP: true });
+  const [logs, setLogs] = useState([]);
+  const pollRef = useRef(null);
+
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, []);
+
+  async function startSend(){
+    if (!recipients.length) return alert('No recipients');
+    const payload = {
+      fromName, fromEmail, subject, content, isHtml,
+      recipients, options
+    };
+    const res = await axios.post(`${API_BASE}/send`, payload);
+    if (res.data.ok) {
+      setJobId(res.data.jobId);
+      setLogs(l => [{t: Date.now(), level:'info', msg:'Job started', jobId: res.data.jobId}, ...l]);
+      // start polling job
+      pollRef.current = setInterval(async () => {
+        const s = await axios.get(`${API_BASE}/job/${res.data.jobId}`);
+        setJobStatus(s.data.job);
+        // append logs
+      }, 1500);
+    } else {
+      alert('Failed to start job');
+    }
+  }
+
+  async function pauseJob(){
+    if (!jobId) return;
+    await axios.post(`${API_BASE}/job/${jobId}/pause`);
+    setLogs(l => [{t: Date.now(), level:'warn', msg:'Job paused'}, ...l]);
+  }
+  async function resumeJob(){
+    if (!jobId) return;
+    await axios.post(`${API_BASE}/job/${jobId}/resume`);
+    setLogs(l => [{t: Date.now(), level:'info', msg:'Job resumed'}, ...l]);
+  }
+
+  return (
+    <div className="app-shell">
+      <header className="topbar">
+        <h1>PWA Mailer</h1>
+        <div className="top-actions">
+          <SMTPManager api={API_BASE} />
+        </div>
+      </header>
+
+      <main className="main-grid">
+        <section className="left-col">
+          <RecipientUploader recipients={recipients} setRecipients={setRecipients} api={API_BASE}/>
+          <EditorPanel
+            fromName={fromName} setFromName={setFromName}
+            fromEmail={fromEmail} setFromEmail={setFromEmail}
+            subject={subject} setSubject={setSubject}
+            content={content} setContent={setContent}
+            isHtml={isHtml} setIsHtml={setIsHtml}
+          />
+        </section>
+
+        <section className="middle-col">
+          <PreviewPanel content={content} isHtml={isHtml}/>
+        </section>
+
+        <aside className="right-col">
+          <SendControls
+            recipients={recipients}
+            onSend={startSend}
+            onPause={pauseJob}
+            onResume={resumeJob}
+            options={options} setOptions={setOptions}
+            jobStatus={jobStatus}
+          />
+          <LogPanel logs={jobStatus?.logs || logs}/>
+        </aside>
+      </main>
+
+      <footer className="footer">
+        <small>Use responsibly. Built with ❤️ — PWA offline-ready</small>
+      </footer>
+    </div>
+  );
+}
+
+Create components — simplified but functional. (Place them under frontend/src/components/.)
+
+EditorPanel.jsx
+
+import React from 'react';
+
+export default function EditorPanel({ fromName, setFromName, fromEmail, setFromEmail, subject, setSubject, content, setContent, isHtml, setIsHtml }){
+  return (
+    <div className="card">
+      <h2>Compose</h2>
+      <label>From Name
+        <input value={fromName} onChange={(e)=>setFromName(e.target.value)} />
+      </label>
+      <label>From Email
+        <input value={fromEmail} onChange={(e)=>setFromEmail(e.target.value)} />
+      </label>
+      <label>Subject
+        <input value={subject} onChange={(e)=>setSubject(e.target.value)} />
+      </label>
+      <label>
+        <input type="checkbox" checked={isHtml} onChange={e=>setIsHtml(e.target.checked)} /> HTML content
+      </label>
+      <label>Content (use tags: {`{Email}, {Domain}, {Name}`})
+        <textarea rows={14} value={content} onChange={(e)=>setContent(e.target.value)} />
+      </label>
+      <div className="preview-note">
+        <button onClick={()=>{ /* client preview handled by PreviewPanel */ }}>Preview Live HTML</button>
+      </div>
+    </div>
+  );
+}
+
+PreviewPanel.jsx (includes resolution emulator toggle)
+
+import React, { useState } from 'react';
+
+export default function PreviewPanel({ content, isHtml }){
+  const [mode, setMode] = useState('desktop'); // desktop | mobile
+  const previewHtml = isHtml ? content : `<pre style="white-space:pre-wrap">${escapeHtml(content)}</pre>`;
+
+  function escapeHtml(t){ return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+  return (
+    <div className="card preview-card">
+      <div className="preview-header">
+        <h3>Live Preview</h3>
+        <div className="preview-modes">
+          <button onClick={()=>setMode('desktop')} className={mode==='desktop'?'active':''}>Desktop</button>
+          <button onClick={()=>setMode('mobile')} className={mode==='mobile'?'active':''}>Mobile</button>
+        </div>
+      </div>
+
+      <div className={`emulator ${mode}`}>
+        <iframe title="preview" srcDoc={previewHtml} sandbox="allow-same-origin allow-scripts" />
+      </div>
+
+      <div style={{marginTop:8}}>
+        <small>Tip: toggle Desktop/Mobile to emulate width. Desktop width = 1024×768, Mobile width = 375×812.</small>
+      </div>
+    </div>
+  );
+}
+
+RecipientUploader.jsx
+
+import React, { useState } from 'react';
+import axios from 'axios';
+
+export default function RecipientUploader({ recipients, setRecipients, api }){
+  const [pasteText, setPasteText] = useState('');
+
+  async function uploadFile(e){
+    const file = e.target.files[0];
+    if (!file) return;
+    const fd = new FormData();
+    fd.append('file', file);
+    const res = await axios.post(`${api}/recipients/upload`, fd, { headers: { 'Content-Type': 'multipart/form-data' }});
+    if (res.data.ok) {
+      setRecipients(prev => [...prev, ...res.data.recipients]);
+    }
+  }
+  function pasteAdd(){
+    const lines = pasteText.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+    setRecipients(prev => [...prev, ...lines]);
+    setPasteText('');
+  }
+
+  return (
+    <div className="card">
+      <h3>Recipients</h3>
+      <div>
+        <input type="file" accept=".txt" onChange={uploadFile} />
+      </div>
+      <div>
+        <textarea placeholder="Paste one email per line" value={pasteText} onChange={e=>setPasteText(e.target.value)} />
+        <button onClick={pasteAdd}>Add Pasted</button>
+      </div>
+      <div>
+        <h4>Preview ({recipients.length})</h4>
+        <div className="recipient-list">
+          {recipients.slice(0,100).map((r,i)=>(<div key={i}>{r}</div>))}
+          {recipients.length>100 && <div>+ {recipients.length-100} more</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+SMTPManager.jsx (basic UI to add/test/list SMTP)
+
+import React, { useState, useEffect } from 'react';
+import axios from 'axios';
+export default function SMTPManager({ api }){
+  const [list, setList] = useState([]);
+  const [profile, setProfile] = useState({ host:'', port:587, user:'', pass:'', name:'' });
+  useEffect(()=>{ fetchList(); },[]);
+  async function fetchList(){ const r=await axios.get(`${api}/smtp/list`); setList(r.data.profiles||[]); }
+  async function addProfile(){
+    try {
+      await axios.post(`${api}/smtp/add`, profile);
+      fetchList();
+      alert('Added');
+    } catch(e){ alert('Add failed: '+(e.response?.data?.error||e.message)); }
+  }
+  async function testProfile(){
+    try {
+      await axios.post(`${api}/smtp/test`, profile);
+      alert('OK');
+    } catch(e) { alert('Test failed: '+(e.response?.data?.error||e.message)); }
+  }
+
+  return (
+    <div className="smtp-manager">
+      <details>
+        <summary>SMTP Profiles ({list.length})</summary>
+        <div className="smtp-list">
+          {list.map(p=>(<div key={p.id}>{p.name} — {p.host} ({p.user})</div>))}
+        </div>
+
+        <div className="smtp-form">
+          <input placeholder="host" value={profile.host} onChange={e=>setProfile({...profile,host:e.target.value})}/>
+          <input placeholder="port" value={profile.port} onChange={e=>setProfile({...profile,port:e.target.value})}/>
+          <input placeholder="user" value={profile.user} onChange={e=>setProfile({...profile,user:e.target.value})}/>
+          <input placeholder="pass" type="password" value={profile.pass} onChange={e=>setProfile({...profile,pass:e.target.value})}/>
+          <input placeholder="name" value={profile.name} onChange={e=>setProfile({...profile,name:e.target.value})}/>
+          <div>
+            <button onClick={testProfile}>Test</button>
+            <button onClick={addProfile}>Add</button>
+          </div>
+        </div>
+      </details>
+    </div>
+  );
+}
+
+SendControls.jsx
+
+import React from 'react';
+
+export default function SendControls({ recipients, onSend, onPause, onResume, options, setOptions, jobStatus }){
+  return (
+    <div className="card">
+      <h3>Send Controls</h3>
+      <div>
+        <label>Delay (seconds)
+          <input type="number" value={options.delaySeconds} onChange={e=>setOptions({...options, delaySeconds: Number(e.target.value)})}/>
+        </label>
+        <label>
+          <input type="checkbox" checked={options.rotateSMTP} onChange={e=>setOptions({...options, rotateSMTP:e.target.checked})}/> Rotate SMTP
+        </label>
+      </div>
+
+      <div style={{marginTop:8}}>
+        <button disabled={!recipients.length} onClick={onSend}>Send ({recipients.length})</button>
+        <button onClick={onPause}>Pause</button>
+        <button onClick={onResume}>Resume</button>
+      </div>
+
+      <div style={{marginTop:12}}>
+        <strong>Status</strong>
+        <div>Total: {jobStatus?.stats?.total ?? 0}</div>
+        <div>Sent: {jobStatus?.stats?.sent ?? 0}</div>
+        <div>Failed: {jobStatus?.stats?.failed ?? 0}</div>
+      </div>
+    </div>
+  );
+}
+
+LogPanel.jsx
+
+import React from 'react';
+export default function LogPanel({ logs = [] }){
+  return (
+    <div className="card">
+      <h3>Logs</h3>
+      <div className="log-window">
+        {logs.slice(0,200).map((l,i)=>(
+          <div key={i} className={`log-line log-${l.level || 'info'}`}>
+            <span className="ts">{new Date(l.t||Date.now()).toLocaleTimeString()}</span>
+            <span className="msg">{l.msg}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+frontend/src/serviceWorkerRegistration.js (very small boilerplate, register for PWA)
+
+// Simple register/unregister helper for Vite PWA. Use workbox or Vite PWA plugin for production.
+export function register(){
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(err=>console.warn('SW register failed', err));
+  }
+}
+export function unregister(){
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.getRegistration().then(reg => reg && reg.unregister());
+  }
+}
+
+frontend/src/styles.css — simple attractive design (you can expand with Tailwind / Material)
+
+:root{
+  --bg:#f7f9ff; --card:#ffffff; --accent:#0b5cff; --muted:#6b7280;
+}
+body{ font-family:Inter,system-ui,Arial; margin:0; background:var(--bg); color:#111;}
+.topbar{ display:flex; justify-content:space-between; align-items:center; padding:12px 18px; background:linear-gradient(90deg,#0b5cff22,#0b5cff11); }
+.topbar h1{ margin:0; font-size:18px; color:var(--accent); }
+.main-grid{ display:grid; grid-template-columns: 360px 1fr 320px; gap:16px; padding:18px; }
+.card{ background:var(--card); border-radius:10px; padding:12px; box-shadow:0 6px 18px rgba(12,15,30,0.06); margin-bottom:12px;}
+.left-col .card{ margin-bottom:10px;}
+.preview-card .emulator{ border:1px solid #e6eefc; padding:8px; border-radius:8px; height:560px; display:flex; align-items:center; justify-content:center;}
+.emulator.desktop iframe{ width:1024px; height:768px; border:1px solid #ddd; border-radius:6px; }
+.emulator.mobile iframe{ width:375px; height:812px; border:1px solid #ddd; border-radius:20px; transform:scale(0.85); transform-origin:center; }
+textarea, input { width:100%; padding:8px; margin-top:6px; border-radius:6px; border:1px solid #e7eefb; background:#fbfdff;}
+button { padding:8px 12px; border:0; border-radius:8px; background:var(--accent); color:white; cursor:pointer; margin-right:6px;}
+button:disabled{opacity:0.5}
+.log-window{ max-height:220px; overflow:auto; background:#0b1220; color:#dbeafe; padding:8px; border-radius:8px; font-family:monospace; font-size:13px;}
+.log-info{ color:#93c5fd }
+.log-success{ color:#a7f3d0 }
+.log-error{ color:#fecaca }
+.footer{ padding:12px 18px; text-align:center; color:var(--muted); }
+
+This UI is intentionally simple and clean; swap in Tailwind, Material UI, or Chakra for a faster production look.
+
+⸻
+
+How tags {Email} {Domain} {Name} work
+	•	{Email} → full email address (e.g., john.smith@example.com)
+	•	{Domain} → domain portion (e.g., example.com)
+	•	{Name} → best-effort display name inferred from the local part by replacing dots/underscores/digits with spaces and title-casing (e.g., john.smith → John Smith).
+	•	Tags are replaced both in Subject and Content before sending.
+	•	If you want CSV with explicit Name column, extend recipients format to name,email and parse accordingly.
+
+⸻
+
+Sending flow (what happens when user clicks Send)
+	1.	User composes email and uploads/pastes recipients.
+	2.	User ensures at least one SMTP profile is configured (use SMTPManager to test).
+	3.	Click Send → frontend posts /api/send with sender, recipients, and options.
+	4.	Backend creates a job (in-memory) and starts startJob(jobId) worker.
+	5.	Worker iterates recipients, for each:
+	•	Parses variables {Email}, {Domain}, {Name}
+	•	Replaces tags in subject & body
+	•	Picks an SMTP profile (round-robin rotation)
+	•	Sends email via Nodemailer pooled transporter
+	•	On success/failure updates job stats and logs
+	•	Waits delaySeconds between sends
+	6.	Frontend polls /api/job/:id to show counters, recent logs, pause/resume actions.
+	7.	When finished, transports are closed and job marked complete.
+
+⸻
+
+CLI color logs (Colorama-like) — server console behavior
+	•	Uses chalk to print colored output:
+	•	[OK] green for sent
+	•	[INFO] blue for progress
+	•	[WARN] yellow for warnings
+	•	[ERR] red for failures
+	•	Example lines: console.log(chalk.green('[OK]'), 'Sent user@example.com via smtp.example.com')
+
+⸻
+
+PWA and Offline behavior
+	•	The app includes manifest.json and a simple serviceWorkerRegistration.js to register a service worker. For full offline caching and push support use Vite PWA Plugin or Workbox.
+	•	App is installable (manifest) and can be added to desktop or mobile.
+	•	Remember: sending requires backend connectivity — offline mode can allow composing drafts and queueing to localStorage, then sync when online (advanced feature).
+
+⸻
+
+Production considerations & improvements
+	•	Persistence: persist jobs & stats in Redis or DB; in-memory will be lost on restart.
+	•	Rate limits & quotas: respect SMTP provider limits — throttle or per-profile quotas.
+	•	Retry logic: exponential backoff & retry for transient SMTP errors.
+	•	Authentication & multi-user: secure endpoints with auth (JWT), role-based access, and per-user SMTP profiles.
+	•	Templating: allow Mustache/Handlebars for advanced personalization.
+	•	Attachments: support attachments (multer + pass to sendMail).
+	•	CSV import: parse name,email CSV to supply explicit {Name}.
+	•	Monitoring: add metrics & alerts for bounce rates & delivery failures.
+	•	Email headers & DKIM: sign with DKIM if you manage domains to improve deliverability; don’t attempt to spoof.
+
+⸻
+
+How to run (developer quick start)
+	1.	Clone repo and open two terminals.
+	2.	Backend:
+
+cd backend
+cp .env.example .env
+# edit .env if needed
+npm install
+npm run dev   # uses nodemon (or npm start)
+# backend will run on http://localhost:4000
+
+	3.	Frontend:
+
+cd frontend
+npm install
+npm run dev   # open printed URL, by default http://localhost:5173
+
+	4.	Use the UI:
+
+	•	Add and test an SMTP profile first (SMTPManager → Test).
+	•	Paste or upload recipients (TXT: one email per line).
+	•	Compose message (use {Name} in subject/content to personalize).
+	•	Choose Desktop or Mobile preview and confirm rendering.
+	•	Click Send. Watch logs and counters update.
+
+	5.	To build (production):
+
+# build frontend
+cd frontend
+npm run build
+
+# copy frontend/build to backend directory or configure backend static serve
+# start backend in production
+cd ../backend
+npm start
+# Now open backend host — frontend will be served from backend if configured
+
+
+⸻
+
+Developer notes & file checklist
+	•	Backend:
+	•	server.js — contains endpoints: /api/smtp/*, /api/recipients/upload, /api/send, /api/job/:id, /api/job/:id/pause, /api/job/:id/resume
+	•	smtpStore.json — persistent simple storage
+	•	uploads/ — temp file storage
+	•	Frontend:
+	•	App.jsx — glue + polling
+	•	components/* — each UI piece
+	•	public/manifest.json & serviceWorkerRegistration.js for PWA basics
+
+⸻
+
+Example recipient TXT file format
+
+john.smith@example.com
+jane_doe@example.org
+bob@example.co.uk
+
+(Optional future upgrade) CSV with names:
+
+John Smith,john.smith@example.com
+Jane Doe,jane_doe@example.org
+
+
+⸻
+
+Example: using tag in subject & content
+
+Subject:
+
+Special offer for {Name} from {Domain}
+
+HTML content:
+
+<h2>Hello {Name}!</h2>
+<p>We noticed you at {Domain}. Click <a href="https://{Domain}/welcome">here</a></p>
+
+If recipient is jane.doe@shop.example.com:
+	•	{Email} = jane.doe@shop.example.com
+	•	{Domain} = shop.example.com
+	•	{Name} = Jane Doe
+
+⸻
+
+Final notes & next steps you might want
+	•	Add CSV import & explicit name parsing.
+	•	Add attachments & preview embedded images.
+	•	Build robust persistence and queue manager (BullMQ + Redis).
+	•	Add bounce handling or webhooks (SMTP provider webhooks).
+	•	Add DKIM and domain verification flows for better deliverability.
