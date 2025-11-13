@@ -233,7 +233,14 @@ function applyVars(template, vars){
 const buildPath = path.join(__dirname, 'public');
 if (fs.existsSync(buildPath)) {
   app.use(express.static(buildPath));
-  app.get('/*', (req, res) => res.sendFile(path.join(buildPath, 'index.html')));
+  // Catch-all route for SPA - must come after all API routes
+  app.use((req, res, next) => {
+    if (!req.path.startsWith('/api/')) {
+      res.sendFile(path.join(buildPath, 'index.html'));
+    } else {
+      next();
+    }
+  });
 }
 
 app.listen(PORT, '0.0.0.0', () => log.success(`Backend listening on ${PORT}`));

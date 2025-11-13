@@ -1,4 +1,3 @@
-
 const API_BASE = window.location.origin + '/api';
 
 const state = {
@@ -334,10 +333,9 @@ function toggleSMTPManager() {
   modal.style.display = modal.style.display === 'none' ? 'block' : 'none';
 }
 
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
+function escapeHtml(unsafe) {
+  if (!unsafe) return '';
+  return String(unsafe).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#039;");
 }
 
 if ('serviceWorker' in navigator) {
