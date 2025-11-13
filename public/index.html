@@ -1,0 +1,43 @@
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#0b5cff" />
+    <link rel="manifest" href="/manifest.json" />
+    <title>PWA Mailer</title>
+    <style>
+      :root{--bg:#f7f9ff;--card:#ffffff;--accent:#0b5cff;--muted:#6b7280}
+      body{font-family:Inter,system-ui,Arial;margin:0;background:var(--bg);color:#111}
+      .topbar{display:flex;justify-content:space-between;align-items:center;padding:12px 18px;background:linear-gradient(90deg,#0b5cff22,#0b5cff11)}
+      .topbar h1{margin:0;font-size:18px;color:var(--accent)}
+      .main-grid{display:grid;grid-template-columns:360px 1fr 320px;gap:16px;padding:18px}
+      @media(max-width:1200px){.main-grid{grid-template-columns:1fr}}
+      .card{background:var(--card);border-radius:10px;padding:12px;box-shadow:0 6px 18px rgba(12,15,30,0.06);margin-bottom:12px}
+      .preview-card .emulator{border:1px solid #e6eefc;padding:8px;border-radius:8px;height:560px;display:flex;align-items:center;justify-content:center}
+      .emulator.desktop iframe{width:100%;max-width:1024px;height:500px;border:1px solid #ddd;border-radius:6px}
+      .emulator.mobile iframe{width:375px;height:667px;border:1px solid #ddd;border-radius:20px}
+      textarea,input[type="text"],input[type="email"],input[type="number"],input[type="password"]{width:100%;padding:8px;margin-top:6px;border-radius:6px;border:1px solid #e7eefb;background:#fbfdff;box-sizing:border-box}
+      label{display:block;margin:8px 0;font-size:14px;font-weight:500}
+      button{padding:8px 12px;border:0;border-radius:8px;background:var(--accent);color:white;cursor:pointer;margin-right:6px;margin-top:6px}
+      button:disabled{opacity:0.5;cursor:not-allowed}
+      button.active{background:#059669}
+      .log-window{max-height:220px;overflow:auto;background:#0b1220;color:#dbeafe;padding:8px;border-radius:8px;font-family:monospace;font-size:13px}
+      .log-info{color:#93c5fd}
+      .log-success{color:#a7f3d0}
+      .log-error{color:#fecaca}
+      .log-warn{color:#fde68a}
+      .footer{padding:12px 18px;text-align:center;color:var(--muted)}
+      .preview-modes button{margin:4px}
+      .smtp-manager details{margin:10px 0}
+      .smtp-form input{margin:4px 0}
+      .recipient-list{max-height:120px;overflow:auto;font-size:12px;margin-top:8px}
+      .preview-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script src="/app.js"></script>
+  </body>
+</html>
