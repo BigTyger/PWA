@@ -233,7 +233,7 @@ function applyVars(template, vars){
 const buildPath = path.join(__dirname, 'public');
 if (fs.existsSync(buildPath)) {
   app.use(express.static(buildPath));
-  app.get('*', (req, res) => res.sendFile(path.join(buildPath, 'index.html')));
+  app.get('/*', (req, res) => res.sendFile(path.join(buildPath, 'index.html')));
 }
 
 app.listen(PORT, '0.0.0.0', () => log.success(`Backend listening on ${PORT}`));
