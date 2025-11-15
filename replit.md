@@ -114,11 +114,13 @@ PWA Client
 - Job auto-pauses when all servers are dead
 - Health status persists across server restarts
 
-### Job Persistence
-- Jobs saved to disk every 10 emails
-- Incomplete jobs automatically restored on restart
-- Prevents data loss during crashes or restarts
-- Full state preservation (progress, logs, stats)
+### Job Persistence & Automatic Recovery
+- Jobs saved to disk after EVERY email send
+- Active jobs automatically resume after server crashes/restarts
+- Intentionally paused jobs remain paused after restart
+- `wasActiveWhenSaved` flag tracks job state accurately
+- Prevents data loss and duplicate email sends
+- Full state preservation (progress, logs, stats, SMTP health)
 
 ### Template System
 - Canvas API for server-side image generation
