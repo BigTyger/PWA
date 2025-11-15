@@ -92,7 +92,27 @@ function editorPanelHTML() {
 }
 
 function previewPanelHTML() {
-  const previewHtml = state.isHtml ? state.content : `<pre style="white-space:pre-wrap">${escapeHtml(state.content)}</pre>`;
+  let previewHtml = state.content;
+  if (!state.isHtml) {
+    previewHtml = `<pre style="white-space:pre-wrap">${escapeHtml(state.content)}</pre>`;
+  } else {
+    // Wrap HTML in proper document structure for better preview
+    previewHtml = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 20px; line-height: 1.6; }
+    img { max-width: 100%; height: auto; }
+  </style>
+</head>
+<body>
+  ${state.content}
+</body>
+</html>`;
+  }
   return `
     <div class="card preview-card">
       <div class="preview-header">

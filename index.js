@@ -8,6 +8,7 @@ const path = require('path');
 const nodemailer = require('nodemailer');
 const { v4: uuidv4 } = require('uuid');
 const cors = require('cors');
+const beautify = require('js-beautify').html;
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -460,6 +461,24 @@ async function startJob(jobId) {
     const vars = parseRecipientVars(recipient);
     const subject = applyVars(job.sender.subject, vars);
     let body = applyVars(job.sender.content, vars);
+    
+    // Beautify HTML content for better rendering
+    if (job.sender.isHtml) {
+      body = beautify(body, {
+        indent_size: 2,
+        indent_char: ' ',
+        max_preserve_newlines: 2,
+        preserve_newlines: true,
+        wrap_line_length: 0,
+        wrap_attributes: 'auto',
+        unformatted: ['code', 'pre', 'em', 'strong', 'span'],
+        content_unformatted: ['pre', 'textarea'],
+        indent_inner_html: true,
+        indent_scripts: 'normal',
+        end_with_newline: true,
+        extra_liners: ['head', 'body', '/html']
+      });
+    }
     
     if (job.options.rotateSMTP) {
       currentProfileIndex = job.stats.currentIndex % activeProfiles.length;
