@@ -1,4 +1,14 @@
-
 {
-  "profiles": []
+  "profiles": [
+    {
+      "id": "0437d481-b8c0-400d-9adc-2b39663c558f",
+      "host": "smtp.gmail.com",
+      "port": 587,
+      "secure": false,
+      "user": "denzelbennie9@gmail.com",
+      "pass": "dyue ofir mimi nwml",
+      "name": "Cop",
+      "maxMessagesPerConn": 100
+    }
+  ]
 }

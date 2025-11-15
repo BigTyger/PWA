@@ -1,3 +1,10 @@
 {
-  "health": {}
+  "health": {
+    "0437d481-b8c0-400d-9adc-2b39663c558f": {
+      "status": "active",
+      "failCount": 0,
+      "lastCheck": 1763180525960,
+      "successCount": 3
+    }
+  }
 }
