@@ -1,0 +1,13 @@
+
+services:
+  - type: web
+    name: pwa-mailer
+    env: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    envVars:
+      - key: PORT
+        value: 5000
+      - key: NODE_ENV
+        value: production

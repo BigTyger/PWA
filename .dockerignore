@@ -1,0 +1,12 @@
+
+node_modules
+npm-debug.log
+.git
+.gitignore
+.env
+uploads/*
+jobs/*
+public/templates/*
+*.md
+.replit
+replit.nix
